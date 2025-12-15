@@ -1,153 +1,182 @@
 # Music Audio Service
 
-## Overview
+A **native Android Media Playback Service** for **audio and video** (local + network),
+designed to **gradually replace Download Manager–based playback**, while **WebView playback still coexists**.
 
-Music Audio Service is a native Android background service designed for **local audio and video playback**.  
-It is planned to **replace the current Download Manager–based video playback pipeline**.  
-This service **does not rely on WebView or web streaming** and works entirely with local media files.
-
-> Current App Language Support: **Chinese (zh-CN only)**  
-> Documentation Language: **English**
+Official Website: https://zhuangjiunanp.github.io
 
 ---
 
-## Goals
+## Scope (Important)
 
-- Replace Download Manager video playback logic
-- Provide a unified **Audio / Video playback service**
-- Support background playback
-- Support system-level media controls
-- Prepare infrastructure for future multi-language UI
-
----
-
-## Key Features
-
-- 🎵 Local audio playback (MP3, AAC, FLAC)
-- 🎬 Local video playback (MP4, MKV)
-- 🔊 MediaSession integration
-- ⏯ Notification controls (Play / Pause / Next)
-- 🔁 Playlist support
-- 🧠 Service-based architecture (no Activity dependency)
+- ✅ Local media playback
+- ✅ Network media playback (HTTP / HTTPS)
+- ❌ NOT WebView-based playback
+- ❌ NOT a browser player
+- ⚠ WebView playback still exists, but **not replaced**
 
 ---
 
-## Architecture
+## Required Permissions
 
-```text
-+---------------------+
-|   UI Layer (CN)     |
-|  Activity / View   |
-+----------+----------+
-           |
-           v
-+---------------------+
-| MusicAudioService   |
-| (Foreground)       |
-+----------+----------+
-           |
-           v
-+---------------------+
-| MediaPlayer /      |
-| ExoPlayer           |
-+---------------------+
+```xml
+<uses-permission android:name="android.permission.INTERNET"/>
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
 ```
 
 ---
 
-## Service Lifecycle
-
-1. UI sends Intent command
-2. Service initializes MediaPlayer / ExoPlayer
-3. Service enters foreground mode
-4. MediaSession publishes playback state
-5. Notification controls playback
-
----
-
-## Intent Actions
+## Service Architecture
 
 ```text
-ACTION_PLAY
-ACTION_PAUSE
-ACTION_STOP
-ACTION_SEEK
-ACTION_SET_SOURCE
+UI (Activity / Fragment)
+        |
+        v
+MusicAudioService (Foreground)
+        |
+        v
+ExoPlayer
+        |
+        v
+Local File / Network URL
 ```
 
 ---
 
-## Kotlin Service Example
+## MusicAudioService (FULL Kotlin Code)
 
 ```kotlin
+package com.example.player
+
+import android.app.*
+import android.content.*
+import android.os.*
+import androidx.core.app.NotificationCompat
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
+
 class MusicAudioService : Service() {
+
+    companion object {
+        const val ACTION_SET_SOURCE = "action_set_source"
+        const val ACTION_PLAY = "action_play"
+        const val ACTION_PAUSE = "action_pause"
+        const val ACTION_STOP = "action_stop"
+        const val EXTRA_URL = "extra_url"
+        const val CHANNEL_ID = "media_playback"
+    }
 
     private lateinit var player: ExoPlayer
 
     override fun onCreate() {
         super.onCreate()
+        createNotificationChannel()
         player = ExoPlayer.Builder(this).build()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            "ACTION_PLAY" -> player.play()
-            "ACTION_PAUSE" -> player.pause()
-            "ACTION_STOP" -> stopSelf()
+            ACTION_SET_SOURCE -> {
+                val url = intent.getStringExtra(EXTRA_URL) ?: return START_NOT_STICKY
+                val item = MediaItem.fromUri(url)
+                player.setMediaItem(item)
+                player.prepare()
+            }
+            ACTION_PLAY -> {
+                startForeground(1, buildNotification())
+                player.play()
+            }
+            ACTION_PAUSE -> player.pause()
+            ACTION_STOP -> {
+                player.stop()
+                stopForeground(true)
+                stopSelf()
+            }
         }
         return START_STICKY
     }
 
+    override fun onDestroy() {
+        player.release()
+        super.onDestroy()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Media Playback",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+    }
+
+    private fun buildNotification(): Notification {
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Playing Media")
+            .setContentText("Music Audio Service")
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .build()
+    }
 }
 ```
 
 ---
 
-## Setting Media Source
+## Start Playback from Activity (FULL Code)
 
 ```kotlin
-val mediaItem = MediaItem.fromUri(fileUri)
-player.setMediaItem(mediaItem)
-player.prepare()
+val setSource = Intent(this, MusicAudioService::class.java).apply {
+    action = MusicAudioService.ACTION_SET_SOURCE
+    putExtra(
+        MusicAudioService.EXTRA_URL,
+        "https://example.com/video.mp4"
+    )
+}
+startService(setSource)
+
+val play = Intent(this, MusicAudioService::class.java).apply {
+    action = MusicAudioService.ACTION_PLAY
+}
+startService(play)
 ```
 
 ---
 
-## Foreground Notification
+## AndroidManifest.xml Registration
 
-```kotlin
-startForeground(
-    1,
-    NotificationCompat.Builder(this, CHANNEL_ID)
-        .setContentTitle("Playing Media")
-        .setSmallIcon(R.drawable.ic_music)
-        .build()
-)
+```xml
+<service
+    android:name=".player.MusicAudioService"
+    android:exported="false"
+    android:foregroundServiceType="mediaPlayback"/>
 ```
 
 ---
 
-## Why Replace Download Manager?
+## Why This Replaces Download Manager Playback
 
 | Download Manager | Music Audio Service |
 |------------------|---------------------|
-| File-oriented    | Playback-oriented   |
-| No media control | Full media control  |
-| No background UX | Foreground service  |
-| Not extensible   | Modular & scalable  |
+| Download first   | Stream or play now  |
+| File-only logic  | Media-aware logic   |
+| No MediaSession  | Media-ready         |
+| Indirect control | Direct playback     |
 
 ---
 
-## Future Plan
+## What Is NOT Replaced
 
-- ⏩ Video playback surface binding
-- 🌍 Multi-language UI support
-- 📡 Streaming protocol extension (optional)
-- 🧩 Plugin-based decoder support
+- WebView video playback
+- Browser-based streaming
+- Embedded website players
 
 ---
 
 ## License
 
-MIT License
+MIT
